@@ -388,43 +388,48 @@ import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
-// 1. CONNECTION TO TiDB CLOUD (Updated Labels & Config)
-export const db = await mysql.createConnection({
+// 1. CREATE A CONNECTION POOL (replaces the single connection)
+export const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 4000, // TiDB uses 4000
-  ssl: { 
+  port: process.env.DB_PORT || 4000,        // TiDB uses 4000
+  ssl: {
     minVersion: 'TLSv1.2',
-    rejectUnauthorized: true // Required for TiDB Cloud public endpoints
-  }
+    rejectUnauthorized: true                // Required for TiDB Cloud public endpoints
+  },
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  enableKeepAlive: true,                    // Prevents idle disconnections
+  keepAliveInitialDelay: 10000
 });
 
-console.log("✅ Connected to TiDB Cloud Database!");
+console.log("✅ TiDB Cloud Connection Pool initialized!");
 
-// --- EXPORTED HELPER FUNCTIONS ---
+// --- EXPORTED HELPER FUNCTIONS (using pool instead of db) ---
 export async function run(query, params = []) {
-  const [result] = await db.execute(query, params);
+  const [result] = await pool.execute(query, params);
   return { lastID: result.insertId, changes: result.affectedRows };
 }
 
 export async function get(query, params = []) {
-  const [rows] = await db.execute(query, params);
-  return rows[0]; 
+  const [rows] = await pool.execute(query, params);
+  return rows[0];
 }
 
 export async function all(query, params = []) {
-  const [rows] = await db.execute(query, params);
-  return rows; 
+  const [rows] = await pool.execute(query, params);
+  return rows;
 }
 
-// 2. MAIN SEEDING LOGIC
+// 2. MAIN SEEDING LOGIC (unchanged except using pool.execute)
 export async function initDatabase() {
   console.log("🚀 Starting Full Cloud Seeding (TiDB Cloud)...");
 
   // --- CREATE TABLES ---
-  await db.execute(`CREATE TABLE IF NOT EXISTS users (
+  await pool.execute(`CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -436,15 +441,15 @@ export async function initDatabase() {
   )`);
 
   // Column safety checks
-  try { await db.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(20)`); } catch (e) {}
-  try { await db.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(255)`); } catch (e) {}
+  try { await pool.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(20)`); } catch (e) {}
+  try { await pool.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(255)`); } catch (e) {}
 
-  await db.execute(`CREATE TABLE IF NOT EXISTS institutions (
+  await pool.execute(`CREATE TABLE IF NOT EXISTS institutions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) UNIQUE NOT NULL
   )`);
 
-  await db.execute(`CREATE TABLE IF NOT EXISTS assignment_rules (
+  await pool.execute(`CREATE TABLE IF NOT EXISTS assignment_rules (
     id INT AUTO_INCREMENT PRIMARY KEY,
     institution VARCHAR(150) NOT NULL,
     department VARCHAR(150) NOT NULL,
@@ -455,7 +460,7 @@ export async function initDatabase() {
     UNIQUE KEY rule_id (institution, department, issue_category, sub_category)
   )`);
 
-  await db.execute(`CREATE TABLE IF NOT EXISTS complaints (
+  await pool.execute(`CREATE TABLE IF NOT EXISTS complaints (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_name VARCHAR(255) NOT NULL,
     mobile VARCHAR(20) NOT NULL,
@@ -470,7 +475,7 @@ export async function initDatabase() {
     FOREIGN KEY (assigned_to) REFERENCES users(id)
   )`);
 
-  // --- SEEDING LOGIC ---
+  // --- SEEDING LOGIC (exactly as before) ---
   const institutionsList = [
     'East Point College of Medical Sciences & Research Centre (EPCMSR)',
     'East Point Medical College Hospital (EPH)',
@@ -485,7 +490,7 @@ export async function initDatabase() {
     'East Point Allied Health Sciences (EPAHS)'
   ];
   for (const name of institutionsList) {
-    await db.execute('INSERT IGNORE INTO institutions (name) VALUES (?)', [name]);
+    await pool.execute('INSERT IGNORE INTO institutions (name) VALUES (?)', [name]);
   }
 
   // --- STAFF SEEDING ---
@@ -493,7 +498,7 @@ export async function initDatabase() {
   const staffPassword = await bcrypt.hash('staff123', 10);
   for (const name of staffNames) {
     const email = name.toLowerCase().replace(/[^a-z0-9]/g, '.') + '@staff.eastpoint.edu';
-    await db.execute(
+    await pool.execute(
       'INSERT IGNORE INTO users (name, email, password, role, mobile) VALUES (?, ?, ?, ?, ?)',
       [name, email, staffPassword, 'staff', '']
     );
@@ -501,13 +506,13 @@ export async function initDatabase() {
 
   // Admin Account
   const hashedAdminPass = await bcrypt.hash('admin123', 10);
-  await db.execute(`INSERT IGNORE INTO users (name, email, password, role, mobile) 
+  await pool.execute(`INSERT IGNORE INTO users (name, email, password, role, mobile) 
     VALUES ('Administrator', 'admin@eastpoint.edu', ?, 'admin', '9999999999')`, [hashedAdminPass]);
 
   console.log("✨ All Data Seeded to TiDB Cloud!");
 }
 
-// Handle Auto-run
+// Run seeding once when the module loads
 initDatabase().then(() => {
   console.log("🚀 TiDB Cloud Setup Complete.");
 }).catch(err => {
