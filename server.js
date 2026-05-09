@@ -109,12 +109,13 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/staff', staffRoutes);
 
 // --- SINGLE SERVER START BLOCK ---
-initDatabase().then(() => {
-  // Binding to "0.0.0.0" allows Railway to route external traffic to this port
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ Server is live on port ${PORT}`);
-    console.log(`🚀 Accepting external connections at 0.0.0.0`);
-  });
-}).catch(err => {
-  console.error("❌ Database initialization failed:", err);
+// Start server immediately (don't wait for database)
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Server is live on port ${PORT}`);
+  console.log(`🚀 Accepting external connections at 0.0.0.0`);
+});
+
+// Run database seeding in background, but don't crash if it fails
+initDatabase().catch(err => {
+  console.error("❌ Seeding failed (server is still running):", err);
 });
