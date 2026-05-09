@@ -388,27 +388,27 @@ import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
-// 1. CREATE A CONNECTION POOL (replaces the single connection)
+// 1. CREATE A CONNECTION POOL (fixes the "closed state" error)
 export const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 4000,        // TiDB uses 4000
+  port: process.env.DB_PORT || 4000,
   ssl: {
     minVersion: 'TLSv1.2',
-    rejectUnauthorized: true                // Required for TiDB Cloud public endpoints
+    rejectUnauthorized: true
   },
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  enableKeepAlive: true,                    // Prevents idle disconnections
+  enableKeepAlive: true,
   keepAliveInitialDelay: 10000
 });
 
 console.log("✅ TiDB Cloud Connection Pool initialized!");
 
-// --- EXPORTED HELPER FUNCTIONS (using pool instead of db) ---
+// --- HELPER FUNCTIONS (using the pool) ---
 export async function run(query, params = []) {
   const [result] = await pool.execute(query, params);
   return { lastID: result.insertId, changes: result.affectedRows };
@@ -424,11 +424,13 @@ export async function all(query, params = []) {
   return rows;
 }
 
-// 2. MAIN SEEDING LOGIC (unchanged except using pool.execute)
+// 2. MAIN SEEDING FUNCTION – creates ALL tables and fills them with initial data
 export async function initDatabase() {
   console.log("🚀 Starting Full Cloud Seeding (TiDB Cloud)...");
 
-  // --- CREATE TABLES ---
+  // ----- CREATE TABLES (order matters due to foreign keys) -----
+  
+  // Users table
   await pool.execute(`CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -439,16 +441,41 @@ export async function initDatabase() {
     department VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
-
-  // Column safety checks
+  // Add optional columns if missing
   try { await pool.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(20)`); } catch (e) {}
   try { await pool.execute(`ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(255)`); } catch (e) {}
 
+  // Institutions table
   await pool.execute(`CREATE TABLE IF NOT EXISTS institutions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) UNIQUE NOT NULL
   )`);
 
+  // Departments table (used by /api/categories/departments)
+  await pool.execute(`CREATE TABLE IF NOT EXISTS departments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL
+  )`);
+
+  // Issue Categories table
+  await pool.execute(`CREATE TABLE IF NOT EXISTS issue_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    department_id INT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    UNIQUE KEY (department_id, name)
+  )`);
+
+  // Sub Categories table
+  await pool.execute(`CREATE TABLE IF NOT EXISTS sub_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    category_id INT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    FOREIGN KEY (category_id) REFERENCES issue_categories(id) ON DELETE CASCADE,
+    UNIQUE KEY (category_id, name)
+  )`);
+
+  // Assignment rules table
   await pool.execute(`CREATE TABLE IF NOT EXISTS assignment_rules (
     id INT AUTO_INCREMENT PRIMARY KEY,
     institution VARCHAR(150) NOT NULL,
@@ -460,6 +487,7 @@ export async function initDatabase() {
     UNIQUE KEY rule_id (institution, department, issue_category, sub_category)
   )`);
 
+  // Complaints table
   await pool.execute(`CREATE TABLE IF NOT EXISTS complaints (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_name VARCHAR(255) NOT NULL,
@@ -475,7 +503,9 @@ export async function initDatabase() {
     FOREIGN KEY (assigned_to) REFERENCES users(id)
   )`);
 
-  // --- SEEDING LOGIC (exactly as before) ---
+  // ----- SEED DATA -----
+
+  // Seed Institutions (same as before)
   const institutionsList = [
     'East Point College of Medical Sciences & Research Centre (EPCMSR)',
     'East Point Medical College Hospital (EPH)',
@@ -493,7 +523,94 @@ export async function initDatabase() {
     await pool.execute('INSERT IGNORE INTO institutions (name) VALUES (?)', [name]);
   }
 
-  // --- STAFF SEEDING ---
+  // Seed Departments
+  const departmentsList = [
+    'Academic',
+    'Administration',
+    'Information Technology (IT)',
+    'Facilities & Maintenance',
+    'HR & Payroll',
+    'Finance & Accounts',
+    'Student Affairs',
+    'Library'
+  ];
+  for (const dept of departmentsList) {
+    await pool.execute('INSERT IGNORE INTO departments (name) VALUES (?)', [dept]);
+  }
+
+  // Seed Issue Categories (dependent on departments)
+  // First get department id map
+  const deptRows = await pool.execute('SELECT id, name FROM departments');
+  const deptMap = {};
+  deptRows[0].forEach(row => { deptMap[row.name] = row.id; });
+
+  const categoriesData = [
+    { department: 'Academic', name: 'Curriculum' },
+    { department: 'Academic', name: 'Examination' },
+    { department: 'Academic', name: 'Classroom Issues' },
+    { department: 'Administration', name: 'Policy & Governance' },
+    { department: 'Administration', name: 'Documentation' },
+    { department: 'Information Technology (IT)', name: 'Hardware' },
+    { department: 'Information Technology (IT)', name: 'Software' },
+    { department: 'Information Technology (IT)', name: 'Network' },
+    { department: 'Facilities & Maintenance', name: 'Electrical' },
+    { department: 'Facilities & Maintenance', name: 'Plumbing' },
+    { department: 'Facilities & Maintenance', name: 'Furniture' },
+    { department: 'HR & Payroll', name: 'Salary' },
+    { department: 'HR & Payroll', name: 'Leave' },
+    { department: 'Finance & Accounts', name: 'Fee Payment' },
+    { department: 'Finance & Accounts', name: 'Reimbursement' },
+    { department: 'Student Affairs', name: 'Scholarship' },
+    { department: 'Student Affairs', name: 'Events' },
+    { department: 'Library', name: 'Book Issue' },
+    { department: 'Library', name: 'Digital Resources' }
+  ];
+
+  for (const cat of categoriesData) {
+    const deptId = deptMap[cat.department];
+    if (deptId) {
+      await pool.execute(
+        'INSERT IGNORE INTO issue_categories (department_id, name) VALUES (?, ?)',
+        [deptId, cat.name]
+      );
+    }
+  }
+
+  // Seed Sub Categories (for each category)
+  const catRows = await pool.execute('SELECT id, name FROM issue_categories');
+  const catMap = {};
+  catRows[0].forEach(row => { catMap[row.name] = row.id; });
+
+  const subCategoriesData = [
+    { category: 'Curriculum', name: 'Syllabus Change Request' },
+    { category: 'Curriculum', name: 'Course Feedback' },
+    { category: 'Examination', name: 'Exam Schedule Issue' },
+    { category: 'Examination', name: 'Results Discrepancy' },
+    { category: 'Hardware', name: 'Printer Not Working' },
+    { category: 'Hardware', name: 'Computer Malfunction' },
+    { category: 'Software', name: 'Login Issue' },
+    { category: 'Software', name: 'Software Installation' },
+    { category: 'Network', name: 'Wi-Fi Connectivity' },
+    { category: 'Network', name: 'Internet Slow' },
+    { category: 'Salary', name: 'Salary Delay' },
+    { category: 'Salary', name: 'Incorrect Deduction' },
+    { category: 'Fee Payment', name: 'Online Payment Failed' },
+    { category: 'Fee Payment', name: 'Receipt Not Generated' },
+    { category: 'Book Issue', name: 'Book Not Available' },
+    { category: 'Book Issue', name: 'Return Fine Dispute' },
+  ];
+
+  for (const sub of subCategoriesData) {
+    const catId = catMap[sub.category];
+    if (catId) {
+      await pool.execute(
+        'INSERT IGNORE INTO sub_categories (category_id, name) VALUES (?, ?)',
+        [catId, sub.name]
+      );
+    }
+  }
+
+  // Seed Staff Users
   const staffNames = ['Mr Devraj', 'Mr Basil', 'Mr Senthil Kumar', 'Mr Vinod', 'Mr Sathish', 'Mr Manjunath', 'Mr Anand', 'Mr Vinod Kumar'];
   const staffPassword = await bcrypt.hash('staff123', 10);
   for (const name of staffNames) {
@@ -504,15 +621,18 @@ export async function initDatabase() {
     );
   }
 
-  // Admin Account
+  // Seed Admin Account
   const hashedAdminPass = await bcrypt.hash('admin123', 10);
-  await pool.execute(`INSERT IGNORE INTO users (name, email, password, role, mobile) 
-    VALUES ('Administrator', 'admin@eastpoint.edu', ?, 'admin', '9999999999')`, [hashedAdminPass]);
+  await pool.execute(
+    `INSERT IGNORE INTO users (name, email, password, role, mobile) 
+     VALUES ('Administrator', 'admin@eastpoint.edu', ?, 'admin', '9999999999')`,
+    [hashedAdminPass]
+  );
 
-  console.log("✨ All Data Seeded to TiDB Cloud!");
+  console.log("✨ All Data (including departments, categories, subcategories) Seeded to TiDB Cloud!");
 }
 
-// Run seeding once when the module loads
+// Auto-run seeding when module loads
 initDatabase().then(() => {
   console.log("🚀 TiDB Cloud Setup Complete.");
 }).catch(err => {
