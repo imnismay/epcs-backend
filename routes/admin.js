@@ -24,12 +24,13 @@ router.get('/stats', async (req, res) => {
     [today]
   );
   
+  // ✅ FIXED: MySQL/TiDB compatible date functions
   const weekly = await get(
-    "SELECT COUNT(*) as count FROM complaints WHERE created_at >= datetime('now', '-7 days')"
+    "SELECT COUNT(*) as count FROM complaints WHERE created_at >= NOW() - INTERVAL 7 DAY"
   );
   
   const monthly = await get(
-    "SELECT COUNT(*) as count FROM complaints WHERE created_at >= datetime('now', '-30 days')"
+    "SELECT COUNT(*) as count FROM complaints WHERE created_at >= NOW() - INTERVAL 30 DAY"
   );
 
   res.json({
