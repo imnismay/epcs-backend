@@ -77,7 +77,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ----------------- CLEAN CORS CONFIGURATION -----------------
+// ----------------- CORS CONFIGURATION -----------------
 const allowedOrigins = [
   'https://epgi-ddx.pages.dev',
   'http://localhost:3000',
@@ -99,18 +99,20 @@ const corsOptions = {
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
+      console.warn(`CORS blocked: ${origin}`);
       callback(new Error(`CORS blocked: ${origin} not allowed`));
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // ✅ Added PATCH
   allowedHeaders: ['Content-Type', 'Authorization'],
   maxAge: 86400
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Handle preflight
+app.options('*', cors(corsOptions)); // Handle preflight for all routes
 
+// Logging middleware
 app.use((req, res, next) => {
   console.log(`[${req.method}] ${req.url} - Origin: ${req.headers.origin || 'no origin'}`);
   next();
@@ -120,6 +122,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Public endpoints
 app.get('/api/public/institutions', async (req, res) => {
   try {
     const rows = await all('SELECT name FROM institutions ORDER BY name');
@@ -131,19 +134,28 @@ app.get('/api/public/institutions', async (req, res) => {
   }
 });
 
+// API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/complaints', complaintRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/staff', staffRoutes);
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
 initDatabase()
   .then(() => {
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✅ Server is live on port ${PORT}`);
+      console.log(`✅ CORS enabled for: ${envOrigin || allowedOrigins.join(', ')}`);
     });
   })
   .catch(err => {
     console.error('❌ Database initialization failed:', err);
-    process.exit(1); // Exit so the cloud provider knows it failed
+    process.exit(1);
   });
