@@ -124,37 +124,86 @@ router.post('/submit', upload.single('attachment'), async (req, res) => {
       return res.status(400).json({ error: 'All required fields must be filled' });
     }
 
-    // Find assignment rule
+    // Find assignment rule - Priority 1: Exact match (institution + department + category + subcategory)
     let rule = await get(
       `SELECT staff_id FROM assignment_rules 
        WHERE institution = ? AND department = ? AND issue_category = ? AND sub_category = ?`,
       [institution, department, issueCategory, subCategory]
     );
 
+    // Priority 2: Department + category + subcategory (no institution)
     if (!rule) {
       rule = await get(
         `SELECT staff_id FROM assignment_rules 
-         WHERE department = ? AND issue_category = ? AND sub_category = ? LIMIT 1`,
+         WHERE department = ? AND issue_category = ? AND sub_category = ? 
+         AND (institution IS NULL OR institution = '')
+         LIMIT 1`,
         [department, issueCategory, subCategory]
       );
       if (rule) {
-        console.log(`No exact institution match for ${institution}, but found rule for ${department}/${issueCategory}/${subCategory}`);
+        console.log(`✓ Found department-level rule for ${department}/${issueCategory}/${subCategory}`);
+      }
+    }
+
+    // Priority 3: Department + category only
+    if (!rule) {
+      rule = await get(
+        `SELECT staff_id FROM assignment_rules 
+         WHERE department = ? AND issue_category = ? 
+         AND (institution IS NULL OR institution = '')
+         AND (sub_category IS NULL OR sub_category = '')
+         LIMIT 1`,
+        [department, issueCategory]
+      );
+      if (rule) {
+        console.log(`✓ Found category-level rule for ${department}/${issueCategory}`);
+      }
+    }
+
+    // Priority 4: Department only
+    if (!rule) {
+      rule = await get(
+        `SELECT staff_id FROM assignment_rules 
+         WHERE department = ? 
+         AND (institution IS NULL OR institution = '')
+         AND (issue_category IS NULL OR issue_category = '')
+         AND (sub_category IS NULL OR sub_category = '')
+         LIMIT 1`,
+        [department]
+      );
+      if (rule) {
+        console.log(`✓ Found department-level rule for ${department}`);
       }
     }
     
     let assignedTo = null;
     let initialStatus = 'New';
+    let assignmentSource = 'none';
     
     if (rule && rule.staff_id) {
       assignedTo = rule.staff_id;
       initialStatus = 'Assigned';
+      assignmentSource = 'rule';
+      console.log(`✅ Assigned to staff ID: ${assignedTo} via assignment rule`);
     } else {
-      const admin = await get("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-      assignedTo = admin ? admin.id : null;
-      console.log(`No assignment rule found for ${department}/${issueCategory}/${subCategory}. Assigned to admin.`);
+      // FALLBACK: Try to find any staff member (instead of admin)
+      const anyStaff = await get("SELECT id FROM users WHERE role = 'staff' LIMIT 1");
+      if (anyStaff) {
+        assignedTo = anyStaff.id;
+        initialStatus = 'Assigned';
+        assignmentSource = 'fallback-staff';
+        console.log(`⚠️ No rule found. Assigned to fallback staff ID: ${assignedTo}`);
+      } else {
+        // Last resort - assign to admin if no staff exists
+        const admin = await get("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+        assignedTo = admin ? admin.id : null;
+        initialStatus = assignedTo ? 'Assigned' : 'New';
+        assignmentSource = 'fallback-admin';
+        console.log(`❌ No staff found. Assigned to admin ID: ${assignedTo}`);
+      }
     }
 
-    // ✅ NOW INCLUDES attachment column (since you added it to the database)
+    // Insert complaint
     const result = await run(
       `INSERT INTO complaints 
        (user_name, mobile, institution, department, issue_category, sub_category, description, priority, attachment, assigned_to, status)
@@ -163,9 +212,14 @@ router.post('/submit', upload.single('attachment'), async (req, res) => {
     );
 
     // Add initial remark
-    const remarkText = assignedTo 
-      ? `Complaint submitted and assigned to staff ID ${assignedTo}` 
-      : 'Complaint submitted (no matching assignment rule)';
+    let remarkText = '';
+    if (assignmentSource === 'rule') {
+      remarkText = `Complaint submitted and assigned to staff ID ${assignedTo} via assignment rule`;
+    } else if (assignmentSource === 'fallback-staff') {
+      remarkText = `Complaint submitted (no matching rule found). Auto-assigned to available staff ID ${assignedTo}`;
+    } else {
+      remarkText = `Complaint submitted (no matching rule and no staff found). Assigned to admin ID ${assignedTo}`;
+    }
     
     await run(
       'INSERT INTO remarks (complaint_id, remark, status_change) VALUES (?, ?, ?)',
@@ -175,11 +229,13 @@ router.post('/submit', upload.single('attachment'), async (req, res) => {
     res.json({ 
       success: true, 
       complaintId: result.lastID, 
-      message: 'Complaint submitted successfully' 
+      message: 'Complaint submitted successfully',
+      assignedTo: assignedTo,
+      assignmentSource: assignmentSource
     });
     
   } catch (error) {
-    console.error('Error submitting complaint:', error);
+    console.error('❌ Error submitting complaint:', error);
     res.status(500).json({ error: 'Failed to submit complaint: ' + error.message });
   }
 });
