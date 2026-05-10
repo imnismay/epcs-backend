@@ -245,7 +245,7 @@ router.get('/stats', async (req, res) => {
       [today]
     );
     
-    // ✅ FIXED: MySQL/TiDB compatible date functions
+    // MySQL/TiDB compatible date functions
     const weekly = await get(
       "SELECT COUNT(*) as count FROM complaints WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
     );
@@ -323,10 +323,10 @@ router.get('/export', async (req, res) => {
   }
 });
 
-// Manage staff users
+// Get all users (for admin management)
 router.get('/users', async (req, res) => {
   try {
-    const users = await all("SELECT id, name, email, role, mobile, department, created_at FROM users");
+    const users = await all("SELECT id, name, email, role, department, created_at FROM users");
     res.json(users);
   } catch (err) {
     console.error('Error fetching users:', err);
@@ -334,21 +334,30 @@ router.get('/users', async (req, res) => {
   }
 });
 
+// Create new user (staff or admin)
 router.post('/users', async (req, res) => {
   try {
     const { name, email, password, role, mobile, department } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await get('SELECT id FROM users WHERE email = ?', [email]);
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+    
     const hashedPassword = await bcrypt.hash(password, 10);
     await run(
       'INSERT INTO users (name, email, password, role, mobile, department) VALUES (?, ?, ?, ?, ?, ?)',
-      [name, email, hashedPassword, role, mobile, department]
+      [name, email, hashedPassword, role || 'staff', mobile || null, department || null]
     );
-    res.json({ success: true });
+    res.json({ success: true, message: 'User created successfully' });
   } catch (err) {
     console.error('Error creating user:', err);
     res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
+// Update user
 router.put('/users/:id', async (req, res) => {
   try {
     const { name, email, role, mobile, department } = req.body;
@@ -356,30 +365,47 @@ router.put('/users/:id', async (req, res) => {
       'UPDATE users SET name = ?, email = ?, role = ?, mobile = ?, department = ? WHERE id = ?',
       [name, email, role, mobile, department, req.params.id]
     );
-    res.json({ success: true });
+    res.json({ success: true, message: 'User updated successfully' });
   } catch (err) {
     console.error('Error updating user:', err);
     res.status(500).json({ error: 'Failed to update user' });
   }
 });
 
+// Delete user
 router.delete('/users/:id', async (req, res) => {
   try {
+    // Don't allow deleting own account
+    if (req.params.id == req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
     await run('DELETE FROM users WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, message: 'User deleted successfully' });
   } catch (err) {
     console.error('Error deleting user:', err);
     res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
-// Assignment rules
+// Get staff list for assignment (simplified for dropdowns)
+router.get('/staff-list', async (req, res) => {
+  try {
+    const staff = await all("SELECT id, name, email, department FROM users WHERE role = 'staff' ORDER BY name");
+    res.json(staff);
+  } catch (err) {
+    console.error('Error fetching staff list:', err);
+    res.status(500).json({ error: 'Failed to fetch staff list' });
+  }
+});
+
+// Get all assignment rules
 router.get('/assignment-rules', async (req, res) => {
   try {
     const rules = await all(`
       SELECT ar.*, u.name as staff_name 
       FROM assignment_rules ar
-      JOIN users u ON ar.staff_id = u.id
+      LEFT JOIN users u ON ar.staff_id = u.id
+      ORDER BY ar.id DESC
     `);
     res.json(rules);
   } catch (err) {
@@ -388,49 +414,134 @@ router.get('/assignment-rules', async (req, res) => {
   }
 });
 
+// Create assignment rule
 router.post('/assignment-rules', async (req, res) => {
   try {
     const { institution, department, issue_category, sub_category, staff_id } = req.body;
+    
+    if (!staff_id) {
+      return res.status(400).json({ error: 'Staff ID is required' });
+    }
+    
     await run(
-      'INSERT INTO assignment_rules (institution, department, issue_category, sub_category, staff_id) VALUES (?, ?, ?, ?, ?)',
-      [institution, department, issue_category, sub_category, staff_id]
+      `INSERT INTO assignment_rules 
+       (institution, department, issue_category, sub_category, staff_id) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [institution || null, department || null, issue_category || null, sub_category || null, staff_id]
     );
-    res.json({ success: true });
+    res.json({ success: true, message: 'Assignment rule created successfully' });
   } catch (err) {
     console.error('Error creating assignment rule:', err);
     res.status(500).json({ error: 'Failed to create assignment rule' });
   }
 });
 
+// Delete assignment rule
 router.delete('/assignment-rules/:id', async (req, res) => {
   try {
     await run('DELETE FROM assignment_rules WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, message: 'Assignment rule deleted successfully' });
   } catch (err) {
     console.error('Error deleting assignment rule:', err);
     res.status(500).json({ error: 'Failed to delete assignment rule' });
   }
 });
 
-// Get staff list for assignment
-router.get('/staff-list', async (req, res) => {
-  try {
-    const staff = await all("SELECT id, name, department FROM users WHERE role = 'staff'");
-    res.json(staff);
-  } catch (err) {
-    console.error('Error fetching staff list:', err);
-    res.status(500).json({ error: 'Failed to fetch staff list' });
-  }
-});
-
-// Institutions list
+// Get unique institutions list (from complaints and master list)
 router.get('/institutions', async (req, res) => {
   try {
-    const institutions = await all('SELECT DISTINCT institution FROM complaints');
+    const institutions = await all(`
+      SELECT DISTINCT name FROM (
+        SELECT name FROM institutions
+        UNION 
+        SELECT DISTINCT institution FROM complaints WHERE institution IS NOT NULL
+      ) AS combined ORDER BY name
+    `);
     res.json(institutions);
   } catch (err) {
     console.error('Error fetching institutions:', err);
     res.status(500).json({ error: 'Failed to fetch institutions' });
+  }
+});
+
+// Get departments (from departments table)
+router.get('/departments', async (req, res) => {
+  try {
+    const departments = await all('SELECT id, name FROM departments ORDER BY name');
+    res.json(departments);
+  } catch (err) {
+    console.error('Error fetching departments:', err);
+    res.status(500).json({ error: 'Failed to fetch departments' });
+  }
+});
+
+// Get issue categories by department
+router.get('/categories/:departmentId', async (req, res) => {
+  try {
+    const { departmentId } = req.params;
+    const categories = await all(
+      'SELECT id, name FROM issue_categories WHERE department_id = ? ORDER BY name',
+      [departmentId]
+    );
+    res.json(categories);
+  } catch (err) {
+    console.error('Error fetching categories:', err);
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// Get subcategories by category
+router.get('/subcategories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const subcategories = await all(
+      'SELECT id, name FROM sub_categories WHERE category_id = ? ORDER BY name',
+      [categoryId]
+    );
+    res.json(subcategories);
+  } catch (err) {
+    console.error('Error fetching subcategories:', err);
+    res.status(500).json({ error: 'Failed to fetch subcategories' });
+  }
+});
+
+// Get dashboard summary (for charts)
+router.get('/summary', async (req, res) => {
+  try {
+    // Last 7 days complaints
+    const last7Days = await all(`
+      SELECT DATE(created_at) as date, COUNT(*) as count 
+      FROM complaints 
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `);
+    
+    // Status distribution
+    const statusDistribution = await all(`
+      SELECT status, COUNT(*) as count 
+      FROM complaints 
+      GROUP BY status
+    `);
+    
+    // Department wise stats
+    const departmentStats = await all(`
+      SELECT department, COUNT(*) as count 
+      FROM complaints 
+      WHERE department IS NOT NULL
+      GROUP BY department 
+      ORDER BY count DESC 
+      LIMIT 5
+    `);
+    
+    res.json({
+      last7Days,
+      statusDistribution,
+      departmentStats
+    });
+  } catch (err) {
+    console.error('Error fetching summary:', err);
+    res.status(500).json({ error: 'Failed to fetch summary' });
   }
 });
 
