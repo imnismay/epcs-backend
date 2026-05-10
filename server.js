@@ -77,14 +77,51 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors({
-  // Uses the Railway variable if set, otherwise defaults to your Cloudflare URL
-  origin: process.env.CORS_ORIGIN || 'https://epgi-ddx.pages.dev',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// ----------------- CORS CONFIGURATION -----------------
+// Allowed origins (add more if needed)
+const allowedOrigins = [
+  'https://epgi-ddx.pages.dev',     // your live frontend
+  'http://localhost:3000',          // React dev server
+  'http://localhost:5173',          // Vite (if used)
+];
+
+// If a single origin is provided via env, use that instead
+const envOrigin = process.env.CORS_ORIGIN;
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // If env variable is set, use it (overrides array)
+    if (envOrigin) {
+      if (origin === envOrigin) return callback(null, true);
+      return callback(new Error(`CORS blocked: ${origin} not allowed by env`));
+    }
+    
+    // Otherwise check against the allowedOrigins array
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked request from: ${origin}`);
+      callback(new Error(`CORS blocked: ${origin} not allowed`));
+    }
+  },
+  credentials: true,               // allow cookies/auth headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly (optional, cors does this automatically)
+app.options('*', cors(corsOptions));
+
+// Log every request origin (for debugging)
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.url} - Origin: ${req.headers.origin || 'no origin'}`);
+  next();
+});
+// ------------------------------------------------------
 
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -108,14 +145,15 @@ app.use('/api/complaints', complaintRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/staff', staffRoutes);
 
-// --- SINGLE SERVER START BLOCK ---
-// Start server immediately (don't wait for database)
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server is live on port ${PORT}`);
-  console.log(`🚀 Accepting external connections at 0.0.0.0`);
-});
-
-// Run database seeding in background, but don't crash if it fails
-initDatabase().catch(err => {
-  console.error("❌ Seeding failed (server is still running):", err);
-});
+// --- START SERVER (bind to 0.0.0.0 for cloud hosting) ---
+initDatabase()
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`✅ Server is live on port ${PORT}`);
+      console.log(`🚀 Accepting external connections on 0.0.0.0`);
+      console.log(`🔗 CORS allowed origins: ${envOrigin || allowedOrigins.join(', ')}`);
+    });
+  })
+  .catch(err => {
+    console.error('❌ Database initialization failed:', err);
+  });
