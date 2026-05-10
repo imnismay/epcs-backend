@@ -79,11 +79,37 @@ const PORT = process.env.PORT || 5000;
 
 // ----------------- CORS CONFIGURATION -----------------
 // Allowed origins (add more if needed)
+// Define allowed origins
 const allowedOrigins = [
-  'https://epgi-ddx.pages.dev',     // your live frontend
-  'http://localhost:3000',          // React dev server
-  'http://localhost:5173',          // Vite (if used)
+  'https://epgi-ddx.pages.dev',  // your live frontend
+  'http://localhost:3000',       // local React dev
+  'http://localhost:5173'        // local Vite dev
 ];
+
+// CORS options
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked request from: ${origin}`);
+      callback(new Error('CORS policy violation'));
+    }
+  },
+  credentials: true,  // ⚠️ IMPORTANT: This allows cookies/auth headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // OPTIONS is critical
+  allowedHeaders: ['Content-Type', 'Authorization'],     // Headers your frontend sends
+  maxAge: 86400 // Cache preflight results for 24 hours
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly (for all routes)
+app.options('*', cors(corsOptions));
 
 // If a single origin is provided via env, use that instead
 const envOrigin = process.env.CORS_ORIGIN;
